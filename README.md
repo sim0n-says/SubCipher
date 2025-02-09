@@ -1,6 +1,18 @@
-# SubCipher
+# SubCipher (POC)
 
 Un script bash pour gérer des conteneurs chiffrés LUKS avec support de clés publiques/privées et clé maître.
+
+> **Note**: Ce projet est une preuve de concept (POC) et ne doit pas être utilisé en production sans audit de sécurité approprié.
+
+## État du projet
+
+- **Phase**: Proof of Concept (POC)
+- **Objectif**: Démontrer la faisabilité d'un système de chiffrement avec support de clé maître
+- **Limitations actuelles**:
+  - Non audité pour la sécurité
+  - Gestion basique des erreurs
+  - Tests limités
+  - Interface en ligne de commande basique
 
 ## Prérequis
 
