@@ -49,7 +49,7 @@ La clé maître permet à l'administrateur du serveur d'accéder aux conteneurs 
 
 **Journalisation et Surveillance**: 
 Toutes les actions critiques (création de conteneurs, ajout de clés, ouverture de volumes, etc.) sont correctement journalisées pour des raisons de traçabilité et d'audit. Des mécanismes de surveillance sont mis en place pour détecter toute activité suspecte ou non autorisée.
-(À implémenter)
+(À améliorer)
 
 **Gestion des Erreurs**:
 Les fonctions gèrent correctement les erreurs et fournissent des messages d'erreur clairs en cas de problème.
