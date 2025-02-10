@@ -9,10 +9,10 @@ Un script bash pour gérer des conteneurs chiffrés LUKS avec support de clés p
 - **Phase**: Proof of Concept (POC)
 - **Objectif**: Démontrer la faisabilité d'un système de chiffrement avec support de clé maître
 - **Limitations actuelles**:
-  - Non audité pour la sécurité
-  - Gestion basique des erreurs
-  - Tests limités
-  - Interface en ligne de commande basique
+    - Non audité pour la sécurité
+    - Gestion basique des erreurs
+    - Tests limités
+    - Interface en ligne de commande basique
 
 ## Prérequis
 
@@ -38,24 +38,52 @@ Lancer le script :
 
 ### Fonctionnalités principales
 
-1. **Gestion des volumes**
-   - Création de volumes chiffrés
-   - Montage/démontage
-   - Support de clés publiques/privées
+- **Objectif**: Créer des conteneurs chiffrés pour les clients, avec une clé privée unique pour chaque client et une clé maître pour des raisons de conformité légale.
+- **Sécurité des Clés**:
+    - Les clés privées des clients sont générées de manière sécurisée et ne sont jamais stockées en clair sur le serveur après leur création.
+    - La clé maître est protégée de manière rigoureuse et n'est jamais transmise aux clients.
+- **Porte Dérobée**:
+    - La clé maître permet à l'administrateur du serveur d'accéder aux conteneurs en cas de besoin.
+    - La clé maître est ajoutée aux conteneurs via un slot de clé LUKS, sans que le client puisse y accéder.
+- **Journalisation et Surveillance**:
+    - Toutes les actions critiques (création de conteneurs, ajout de clés, ouverture de volumes, etc.) sont correctement journalisées pour des raisons de traçabilité et d'audit.
+    - Des mécanismes de surveillance sont mis en place pour détecter toute activité suspecte ou non autorisée.
+- **Gestion des Erreurs**:
+    - Les fonctions gèrent correctement les erreurs et fournissent des messages d'erreur clairs en cas de problème.
+- **Automatisation de la Suppression des Clés**:
+    - Une fonction est ajoutée pour supprimer automatiquement les clés privées des clients après leur transmission.
+- **Chiffrement des Journaux**:
+    - Si les journaux contiennent des informations sensibles, ils sont chiffrés.
+- **Tests et Audits**:
+    - Des tests réguliers et des audits de sécurité sont effectués pour vérifier que l'implémentation reste sécurisée et conforme aux normes légales.
+- **Vecteurs d'Attaque**:
+    - Utilisation d'algorithmes de génération de clés robustes pour minimiser le risque de collisions.
+    - Les clés ne peuvent pas être facilement dérivées ou devinées.
+- **Exemple de Génération de Clés Sécurisées**:
+    - Utilisation d'OpenSSL pour générer des clés RSA avec une taille de 2048 bits ou plus.
 
-2. **Gestion des clés**
-   - Création de paires de clés
-   - Création d'une clé maître
-   - Ajout de clés aux volumes
+### Gestion des volumes
 
-3. **Points de montage**
-   - Les volumes sont montés sous `/mnt/vault/`
-   - Format : `/mnt/vault/nom_du_volume`
+1. **Création de volumes chiffrés**
+2. **Montage/démontage**
+3. **Support de clés publiques/privées**
+
+### Gestion des clés
+
+1. **Création de paires de clés**
+2. **Création d'une clé maître**
+3. **Ajout de clés aux volumes**
+
+### Points de montage
+
+- Les volumes sont montés sous `/mnt/vault/`
+- Format : `/mnt/vault/nom_du_volume`
 
 ### Structure des clés
 
 ```
-$HOME/.secrets/
+```
+$HOME/.secrets/keys/
 ├── master/
 │   ├── priv/
 │   │   └── cle_maitre.pem
@@ -79,19 +107,19 @@ La clé maître est un mécanisme de sécurité qui permet :
 #### Fonctionnement
 
 1. **Structure à double clé**
-   - Chaque volume a sa propre paire de clés
-   - La clé maître est ajoutée comme clé secondaire
+     - Chaque volume a sa propre paire de clés
+     - La clé maître est ajoutée comme clé secondaire
 
 2. **Utilisation de la clé maître**
-   ```bash
-   # Ajouter la clé maître à un volume
-   ./subcipher.sh
-   # Choisir l'option 10: "Appliquer une nouvelle clé maître sur un conteneur"
+     ```bash
+     # Ajouter la clé maître à un volume
+     ./subcipher.sh
+     # Choisir l'option 10: "Appliquer une nouvelle clé maître sur un conteneur"
 
-   # Ouvrir un volume avec la clé maître
-   ./subcipher.sh
-   # Choisir l'option 9: "Ouvrir et monter un volume avec la clé maître"
-   ```
+     # Ouvrir un volume avec la clé maître
+     ./subcipher.sh
+     # Choisir l'option 9: "Ouvrir et monter un volume avec la clé maître"
+     ```
 
 #### Sécurité et Conservation
 
@@ -111,6 +139,7 @@ Les logs sont stockés dans : `$HOME/log/subcipher.log`
 - Le dossier de logs avec les permissions 700
 
 ## Version
+
 - Version actuelle : 0.1.0 (POC)
 - Licence : MIT
 
