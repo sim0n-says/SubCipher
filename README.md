@@ -67,7 +67,7 @@ Des tests réguliers et des audits de sécurité sont effectués pour vérifier 
 
 **Vecteurs d'Attaque**:
 Utilisation d'algorithmes de génération de clés robustes pour minimiser le risque de collisions. Les clés ne peuvent pas être facilement dérivées ou devinées.
-(À améliorer)
+(RNG à améliorer)
 
 **Exemple de Génération de Clés Sécurisées**:
 Utilisation d'OpenSSL pour générer des clés RSA avec une taille de 2048 bits ou plus.
