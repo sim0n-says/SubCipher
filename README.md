@@ -43,25 +43,25 @@ Lancer le script :
 **Sécurité des Clés**:
 Les clés privées des clients sont générées de manière sécurisée et ne sont jamais stockées en clair sur le serveur après leur création. La clé maître est protégée de manière rigoureuse et n'est jamais transmise aux clients.
 
-**Porte Dérobée**:
+**Porte Dérobée**: (À améliorer avec implémentation 2FA et utilisation d'un Jeton pour dériver la Clé maître)
 La clé maître permet à l'administrateur du serveur d'accéder aux conteneurs en cas de besoin. La clé maître est ajoutée aux conteneurs via un slot de clé LUKS, sans que le client puisse y accéder.
 
-**Journalisation et Surveillance**:
+**Journalisation et Surveillance**: (À implémenter)
 Toutes les actions critiques (création de conteneurs, ajout de clés, ouverture de volumes, etc.) sont correctement journalisées pour des raisons de traçabilité et d'audit. Des mécanismes de surveillance sont mis en place pour détecter toute activité suspecte ou non autorisée.
 
 **Gestion des Erreurs**:
 Les fonctions gèrent correctement les erreurs et fournissent des messages d'erreur clairs en cas de problème.
 
-**Automatisation de la Suppression des Clés**:
+**Automatisation de la Suppression des Clés**: (À implémenter)
 Une fonction est ajoutée pour supprimer automatiquement les clés privées des clients après leur transmission.
 
-**Chiffrement des Journaux**:
+**Chiffrement des Journaux**: (À implémenter)
 Si les journaux contiennent des informations sensibles, ils sont chiffrés.
 
-**Tests et Audits**:
+**Tests et Audits**: (À réaliser)
 Des tests réguliers et des audits de sécurité sont effectués pour vérifier que l'implémentation reste sécurisée et conforme aux normes légales.
 
-**Vecteurs d'Attaque**:
+**Vecteurs d'Attaque**: (À améliorer)
 Utilisation d'algorithmes de génération de clés robustes pour minimiser le risque de collisions. Les clés ne peuvent pas être facilement dérivées ou devinées.
 
 **Exemple de Génération de Clés Sécurisées**:
@@ -86,7 +86,7 @@ Utilisation d'OpenSSL pour générer des clés RSA avec une taille de 2048 bits 
 
 ### Structure des clés
 
-```
+
 ```
 $HOME/.secrets/keys/
 ├── master/
