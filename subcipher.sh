@@ -471,11 +471,18 @@ apply_new_master() {
 
     # Ouvrir le volume avec la clé privée du conteneur
     log_message "Ouverture du volume avec la clé privée"
-    open_luks "$HOME" "$CONTAINER_NAME" "$private_key"
+    if ! open_luks "$HOME" "$CONTAINER_NAME" "$private_key"; then
+        log_message "Erreur : Impossible d'ouvrir le volume LUKS avec la clé privée"
+        exit 1
+    fi
 
     # Ajouter la clé maître
     log_message "Ajout de la clé maître"
-    add_master_luks_key "$HOME" "$CONTAINER_NAME" "$master_key"
+    if ! add_master_luks_key "$HOME" "$CONTAINER_NAME" "$master_key"; then
+        log_message "Erreur : Impossible d'ajouter la clé maître"
+        close_luks "$MAPPER_NAME"
+        exit 1
+    fi
 
     close_luks "$MAPPER_NAME"
     log_message "Application de la clé maître terminée"
@@ -1093,4 +1100,3 @@ while true; do
     read -p "Appuyez sur Entrée pour continuer..."
     clear
 done
-
