@@ -6,52 +6,144 @@
 # Description: Script pour gérer des conteneurs/volumes chiffrés avec LUKS en utilisant des clés publiques/privées et une clé Maître.
 
 # Configuration des options Bash
-set -e
-set -u
-set -o pipefail
+set -e  # Arrêt en cas d'erreur
+set -u  # Erreur sur variable non définie
+set -o pipefail  # Erreur dans les pipelines
 
 # Variables globales
-MAPPER_NAME=""
-MOUNT_POINT=""
-KEYS_DIR="$HOME/.secrets"
-LOG_FILE="$HOME/log/subcipher.log"
-CONTAINER_NAME=""
-CONTAINER_PATH=""
-CONTAINER_EXT=".vault"  # Nouvelle variable pour l'extension
-MOUNT_ROOT="/mnt/vault"
+readonly SECRETS_DIR="$HOME/.secrets"      # Dossier contenant les clés de chiffrement
+readonly LOG_FILE="$HOME/log/subcipher.log"  # Fichier de journalisation
+readonly CONTAINER_EXT=".vault"            # Extension des fichiers conteneurs
+readonly MOUNT_ROOT="/mnt/vault"           # Point de montage racine des conteneurs
+readonly KEYS_DIR="$HOME/.secrets/keys"            # Dossier contenant les clés
 
+# Variables modifiables
+mapper_name=""      # Nom du périphérique mapper
 # Fonction pour journaliser les messages
 log_message() {
-    local message=$1
+    local message="$1"
     local log_dir=$(dirname "$LOG_FILE")
     
-    # Créer le répertoire de logs s'il n'existe pas
+    # Créer le répertoire de logs si nécessaire
     if [ ! -d "$log_dir" ]; then
         mkdir -p "$log_dir"
-        chmod 700 "$log_dir"  # Permissions restrictives pour le dossier de logs
+        chmod 700 "$log_dir"  # Permissions restrictives pour la sécurité
     fi
-    
+
     echo "$(date '+%Y-%m-%d %H:%M:%S') : $message" | tee -a "$LOG_FILE"
 }
 
 # Fonction pour vérifier l'espace disponible
-check_space() {
-    local path=$1
-    local required_size=$2
-    local available_space=$(df --output=avail "$path" | tail -n 1)
+# @param $1 Chemin du répertoire à vérifier
+# @param $2 Taille requise en Mo
+# @return 0 si suffisant, 1 sinon
+check_available_space() {
+    local path="$1"
+    local required_size="$2"
+    local available_space
+    
+    available_space="$(df --output=avail "$path" | tail -n 1)"
     if (( available_space < required_size )); then
-        log_message "Erreur : Espace insuffisant pour l'opération."
-        exit 1
+        log_message "Error: Insufficient space available at $path (Required: ${required_size}MB, Available: ${available_space}MB)"
+        return 1
     fi
+    
+    log_message "Sufficient space available at $path (Required: ${required_size}MB, Available: ${available_space}MB)"
+    return 0
 }
+
+# Format LUKS volume
+# @param $1 Volume path
+# @param $2 Volume name
+# @param $3 Key path
+# @return void
+format_luks_volume() {
+    local path=$1
+    local name=$2
+    local key=$3
+
+    if [ ! -f "$key" ]; then
+        log_message "Error: Key file not found at $key"
+        return 1
+    fi
+
+    if ! sudo cryptsetup --batch-mode luksFormat "$path/$name" --key-file "$key"; then
+        log_message "Error: Failed to format LUKS volume at $path/$name"
+        return 1
+    fi
+
+    log_message "LUKS volume formatted at $path/$name"
+}
+
+# Format volume as ext4
+# @param $1 Mapper name
+# @return void
+format_ext4_volume() {
+    local mapper_name=$1
+    sudo mkfs.ext4 "/dev/mapper/$mapper_name"
+    log_message "Volume formatted as ext4: $mapper_name"
+}
+
+# Add a LUKS key to volume
+# @param $1 Volume path
+# @param $2 Volume name
+# @param $3 Existing key file
+# @param $4 New key file to add
+# @return 0 on success, 1 on failure
+add_luks_key() {
+    local path=$1
+    local name=$2
+    local key=$3
+    local new_key_file=$4
+
+    # Vérification des fichiers de clés
+    if [ ! -f "$key" ]; then
+        log_message "Error: Key file not found at $key"
+        return 1
+    fi
+
+    if [ ! -f "$new_key_file" ]; then
+        log_message "Error: New key file not found at $new_key_file"
+        return 1
+    fi
+
+    # Ajout de la nouvelle clé
+    if ! sudo cryptsetup luksAddKey --key-file="$key" "$path/$name" "$new_key_file"; then
+        log_message "Error: Failed to add key to LUKS volume at $path/$name"
+        return 1
+    fi
+
+    log_message "Key successfully added to LUKS volume at $path/$name"
+    return 0
+}
+
 
 # Fonction pour créer le fichier conteneur chiffré
 create_container() {
-    local path=$1
-    local name=$2
-    local size=$3
-    fallocate -l "${size}M" "$path/$name"
-    log_message "Fichier conteneur créé à $path/$name avec une taille de $size Mo."
+    local path="$1"
+    local name="$2"
+    local size="$3"  # Size in MB
+
+    # Vérifie si l'espace est disponible
+    if ! check_available_space "$path" "$size"; then
+        log_message "Error: Insufficient space for container"
+        return 1
+    fi
+
+    # Vérifie si les arguments sont présents
+    if [ -z "$path" ] || [ -z "$name" ] || [ -z "$size" ]; then
+        log_message "Error: Missing parameters for create_container (path: $path, name: $name, size: $size)"
+        return 1
+    fi
+
+    # Crée le conteneur avec fallocate
+    if ! fallocate -l "${size}M" "$path/$name"; then
+        log_message "Error: Failed to create container at $path/$name"
+        return 1
+    fi
+
+    log_message "Container file created at $path/$name with size ${size}MB"
+    return 0
 }
 
 # Fonction pour formater le volume LUKS
@@ -83,7 +175,7 @@ add_luks_key() {
     local key=$3
     local new_key_file=$4
 
-    if [ ! -f "$key" ]; then
+    if [ ! -f "$key" ];then
         log_message "Erreur : Le fichier de clé $key n'existe pas."
         exit 1
     fi
@@ -107,7 +199,7 @@ remove_luks_key() {
     local name=$2
     local key=$3
 
-    if [ ! -f "$key" ]; then
+    if [ ! -f "$key" ];then
         log_message "Erreur : Le fichier de clé $key n'existe pas."
         exit 1
     fi
@@ -120,8 +212,15 @@ remove_luks_key() {
 open_luks() {
     local path=$1
     local name=$2
-    local key="${3:-$HOME/.secrets/$name/priv/${name}_cle_privee.pem}"
+    local key="${3:-$HOME/.secrets/$name/priv/${name}_private_key.pem}"
+    
+    # Check if the container exists first
+    if [ ! -f "$path/$name" ]; then
+        log_message "Erreur : Le conteneur $path/$name n'existe pas."
+        exit 1
+    fi
 
+    # Verify the key file exists
     if [ ! -f "$key" ]; then
         log_message "Erreur : Le fichier de clé $key n'existe pas."
         read -p "Le fichier de clé par défaut n'a pas été trouvé. Veuillez fournir le chemin complet du fichier de clé : " key
@@ -131,21 +230,34 @@ open_luks() {
         fi
     fi
 
-    if [ -z "$MAPPER_NAME" ]; then
+    # Set mapper name if not already set
+    if [ -z "${MAPPER_NAME:-}" ]; then
         MAPPER_NAME="${name}_mapper"
     fi
 
-    # Check if the mapper name already exists and close it if necessary
+    # Check if mapper exists and try to close it
     if sudo cryptsetup status "$MAPPER_NAME" &>/dev/null; then
+        # Check if it's mounted first
+        if mount | grep -q "/dev/mapper/$MAPPER_NAME"; then
+            log_message "Le volume est monté. Démontage en cours..."
+            sudo umount "/dev/mapper/$MAPPER_NAME" || {
+                log_message "Erreur : Impossible de démonter le volume."
+                exit 1
+            }
+        fi
         log_message "Le périphérique $MAPPER_NAME existe déjà. Fermeture du périphérique."
-        sudo cryptsetup luksClose "$MAPPER_NAME"
+        sudo cryptsetup luksClose "$MAPPER_NAME" || {
+            log_message "Erreur : Impossible de fermer le mapper."
+            exit 1
+        }
     fi
 
-    sudo cryptsetup luksOpen "$path/$name" "$MAPPER_NAME" --key-file "$key"
-    if [ $? -ne 0 ]; then
+    # Try to open the LUKS volume
+    if ! sudo cryptsetup luksOpen "$path/$name" "$MAPPER_NAME" --key-file "$key"; then
         log_message "Erreur : Impossible d'ouvrir le volume LUKS à $path/$name avec la clé $key."
         exit 1
     fi
+    
     log_message "Volume LUKS ouvert à $path/$name avec la clé $key."
 }
 
@@ -160,19 +272,26 @@ mount_luks() {
     
     # Créer le répertoire racine s'il n'existe pas
     if [ ! -d "$MOUNT_ROOT" ]; then
-        sudo mkdir -p "$MOUNT_ROOT"
-        sudo chown $(whoami):$(whoami) "$MOUNT_ROOT"
-        log_message "Répertoire racine $MOUNT_ROOT créé."
+        if sudo mkdir -p "$MOUNT_ROOT"; then
+            sudo chown $(whoami):$(whoami) "$MOUNT_ROOT"
+            log_message "Répertoire racine $MOUNT_ROOT créé."
+        else
+            log_message "Erreur : Impossible de créer le répertoire racine $MOUNT_ROOT."
+            exit 1
+        fi
     fi
 
     # Créer le point de montage sans l'extension .vault
     if [ ! -d "$mount_point" ]; then
-        sudo mkdir -p "$mount_point"
-        log_message "Répertoire de montage $mount_point créé."
+        if sudo mkdir -p "$mount_point"; then
+            log_message "Répertoire de montage $mount_point créé."
+        else
+            log_message "Erreur : Impossible de créer le répertoire de montage $mount_point."
+            exit 1
+        fi
     fi
 
-    sudo mount "/dev/mapper/$mapper_name" "$mount_point"
-    if [ $? -ne 0 ]; then
+    if ! sudo mount "/dev/mapper/$mapper_name" "$mount_point"; then
         log_message "Erreur : Impossible de monter le volume $mapper_name à $mount_point."
         exit 1
     fi
@@ -192,6 +311,23 @@ close_luks() {
     local mapper_name=$1
     sudo cryptsetup luksClose "$mapper_name"
     log_message "Volume $mapper_name fermé."
+}
+
+
+# Fonction pour démonter tous les volumes .vault montés
+unmount_all_volumes() {
+    echo "Démontage de tous les volumes montés sous $MOUNT_ROOT..."
+    echo "------------------------------------------------"
+    
+    for mount in $(mount | grep "$MOUNT_ROOT" | awk '{print $3}'); do
+        if sudo umount "$mount"; then
+            log_message "Volume démonté avec succès: $mount"
+        else
+            log_message "Erreur lors du démontage de $mount"
+        fi
+    done
+    
+    echo "------------------------------------------------"
 }
 
 # Fonction pour fermer tous les mappers des volumes .vault
@@ -215,47 +351,6 @@ close_all_mappers() {
     done
     echo "------------------------------------------------"
 }
-
-# Fonction pour démonter tous les volumes .vault montés
-unmount_all_volumes() {
-    echo "Démontage de tous les volumes .vault..."
-    echo "------------------------------------------------"
-    
-    # Find all mounted LUKS mappers
-    sudo dmsetup ls --target crypt | while read mapper rest; do
-        if [[ "$mapper" == *"_mapper" ]]; then
-            mount_point=$(mount | grep "/dev/mapper/$mapper" | awk '{print $3}')
-            
-            if [ -n "$mount_point" ]; then
-                echo "Démontage de $mapper à $mount_point"
-                
-                # Check for processes using the mount point
-                if lsof "$mount_point" >/dev/null 2>&1; then
-                    echo "Processus utilisant $mount_point:"
-                    lsof "$mount_point"
-                    read -p "Forcer le démontage? (y/n): " force
-                    if [[ "$force" == "y" ]]; then
-                        sudo umount -f "$mount_point"
-                    else
-                        echo "Démontage annulé pour $mount_point"
-                        continue
-                    fi
-                else
-                    sudo umount "$mount_point"
-                fi
-                
-                if [ $? -eq 0 ]; then
-                    log_message "Volume démonté avec succès: $mount_point"
-                    sudo rmdir "$mount_point" 2>/dev/null
-                else
-                    log_message "Erreur lors du démontage de $mount_point"
-                fi
-            fi
-        fi
-    done
-    echo "------------------------------------------------"
-}
-
 # Fonction pour créer une paire de clés publique/privée
 create_key_pair() {
     local name=$1
@@ -263,8 +358,8 @@ create_key_pair() {
 
     mkdir -p "$container_keys_dir/priv" "$container_keys_dir/pub"
 
-    openssl genpkey -algorithm RSA -out "$container_keys_dir/priv/${name}_cle_privee.pem" -pkeyopt rsa_keygen_bits:2048
-    openssl rsa -pubout -in "$container_keys_dir/priv/${name}_cle_privee.pem" -out "$container_keys_dir/pub/${name}_cle_publique.pem"
+    openssl genpkey -algorithm RSA -out "$container_keys_dir/priv/${name}_private_key.pem" -pkeyopt rsa_keygen_bits:2048
+    openssl rsa -pubout -in "$container_keys_dir/priv/${name}_private_key.pem" -out "$container_keys_dir/pub/${name}_cle_publique.pem"
     log_message "Paire de clés publique/privée créée à $container_keys_dir avec le nom $name."
 }
 
@@ -273,7 +368,7 @@ create_master_key() {
     local master_keys_dir="$KEYS_DIR/master"
     mkdir -p "$master_keys_dir/priv" "$master_keys_dir/pub"
 
-    if [ -f "$master_keys_dir/priv/cle_maitre.pem" ]; then
+    if [ -f "$master_keys_dir/priv/master_key.pem" ]; then
         read -p "La clé maître existe déjà. Voulez-vous la remplacer ? (yes/no) : " RESPONSE
         while [[ -z "$RESPONSE" || ( "$RESPONSE" != "yes" && "$RESPONSE" != "no" ) ]]; do
             read -p "La clé maître existe déjà. Voulez-vous la remplacer ? (yes/no) : " RESPONSE
@@ -285,11 +380,11 @@ create_master_key() {
     fi
     
     # Créer la paire de clés maître sans passphrase
-    openssl genpkey -algorithm RSA -out "$master_keys_dir/priv/cle_maitre.pem" -pkeyopt rsa_keygen_bits:4096
-    openssl rsa -pubout -in "$master_keys_dir/priv/cle_maitre.pem" -out "$master_keys_dir/pub/cle_maitre_pub.pem"
+    openssl genpkey -algorithm RSA -out "$master_keys_dir/priv/master_key.pem" -pkeyopt rsa_keygen_bits:4096
+    openssl rsa -pubout -in "$master_keys_dir/priv/master_key.pem" -out "$master_keys_dir/pub/master_key_pub.pem"
     
-    chmod 600 "$master_keys_dir/priv/cle_maitre.pem"
-    chmod 644 "$master_keys_dir/pub/cle_maitre_pub.pem"
+    chmod 600 "$master_keys_dir/priv/master_key.pem"
+    chmod 644 "$master_keys_dir/pub/master_key_pub.pem"
     
     log_message "Paire de clés maître créée in $master_keys_dir"
 }
@@ -310,15 +405,15 @@ decrypt_volume() {
     local encrypted_name=$2
     local container_keys_dir="$KEYS_DIR/${encrypted_name%.enc}"
 
-    openssl rsautl -decrypt -inkey "$container_keys_dir/priv/${encrypted_name%.enc}_cle_privee.pem" -in "$path/$encrypted_name" -out "$path/${encrypted_name%.enc}"
-    log_message "Volume déchiffré avec la clé privée $container_keys_dir/priv/${encrypted_name%.enc}_cle_privee.pem."
+    openssl rsautl -decrypt -inkey "$container_keys_dir/priv/${encrypted_name%.enc}_private_key.pem" -in "$path/$encrypted_name" -out "$path/${encrypted_name%.enc}"
+    log_message "Volume déchiffré avec la clé privée $container_keys_dir/priv/${encrypted_name%.enc}_private_key.pem."
 }
 
 # Fonction pour déchiffrer un volume avec la clé maître
 decrypt_master() {
     local path=$1
     local encrypted_name=$2
-    local master_key="$KEYS_DIR/master/cle_maitre.pem"
+    local master_key="$KEYS_DIR/master/master_key.pem"
 
     if [ ! -f "$master_key" ]; then
         log_message "Erreur : Le fichier de clé maître $master_key n'existe pas."
@@ -329,50 +424,14 @@ decrypt_master() {
     log_message "Volume déchiffré avec la clé maître $master_key."
 }
 
-# Fonction pour ouvrir le volume LUKS avec la clé maître et le monter
-open_master() {
-    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
-    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
-    CONTAINER_PATH="$HOME/$CONTAINER_NAME"
-    MASTER_KEY="$KEYS_DIR/master/priv/cle_maitre.pem"
-    
-    # Vérifier si la clé maître existe
-    if [ ! -f "$MASTER_KEY" ];then
-        log_message "Erreur : La clé maître n'existe pas à $MASTER_KEY"
-        exit 1
-    fi
-    
-    if [ -z "$MAPPER_NAME" ]; then
-        MAPPER_NAME="${CONTAINER_NAME}_mapper"
-    fi
-
-    # Fermer le mapper s'il existe déjà
-    if sudo cryptsetup status "$MAPPER_NAME" &>/dev/null; then
-        log_message "Le périphérique $MAPPER_NAME existe déjà. Fermeture du périphérique."
-        sudo cryptsetup luksClose "$MAPPER_NAME"
-    fi
-
-    # Utiliser directement la clé maître
-    sudo cryptsetup luksOpen "$HOME/$CONTAINER_NAME" "$MAPPER_NAME" --key-file "$MASTER_KEY"
-    local STATUS=$?
-    
-    if [ $STATUS -ne 0 ]; then
-        log_message "Erreur : Impossible d'ouvrir le volume avec la clé maître"
-        exit 1
-    fi
-    
-    log_message "Volume ouvert avec la clé maître"
-    mount_luks "$MAPPER_NAME" "/mnt/$CONTAINER_NAME"
-}
-
 # Fonction pour appliquer une nouvelle clé maître sur un conteneur
 apply_new_master() {
     read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
     CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
     CONTAINER_PATH="$HOME/$CONTAINER_NAME"
     local master_keys_dir="$KEYS_DIR/master"
-    local private_key="$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_cle_privee.pem"
-    local master_key="$master_keys_dir/priv/cle_maitre.pem"
+    local private_key="$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_private_key.pem"
+    local master_key="$master_keys_dir/priv/master_key.pem"
 
     # Vérifier l'existence des fichiers nécessaires
     if [ ! -f "$master_key" ]; then
@@ -399,137 +458,480 @@ apply_new_master() {
 
 # Fonction pour créer le volume
 create_volume() {
-    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
-    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
-    CONTAINER_PATH="$HOME/$CONTAINER_NAME"
-    read -p "Taille du fichier conteneur en Go : " CONTAINER_SIZE_GB
-    local CONTAINER_SIZE=$((CONTAINER_SIZE_GB * 1024))
+    local container_name=""
+    local container_size=1024  # Default 1GB in MB
+    
+    read -p "Nom du fichier conteneur (sans extension) : " container_name
+    if [ -z "$container_name" ]; then
+        log_message "Erreur : Nom de conteneur requis"
+        return 1
+    fi
+    container_name="${container_name}${CONTAINER_EXT}"
+    
+    read -p "Taille du fichier conteneur en Go [1]: " size_input
+    if [ -n "$size_input" ]; then
+        container_size=$((size_input * 1024))
+    fi
 
-    check_space "$HOME" "$CONTAINER_SIZE"
-
-    create_container "$HOME" "$CONTAINER_NAME" "$CONTAINER_SIZE"
+    # Create container
+    if ! create_container "$HOME" "$container_name" "$container_size"; then
+        return 1
+    fi
     log_message "Fichier conteneur créé."
 
-    create_key_pair "$CONTAINER_NAME"
+    # Create keys
+    create_key_pair "$container_name"
     log_message "Paire de clés créée."
 
-    format_luks "$HOME" "$CONTAINER_NAME" "$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_cle_privee.pem"
+    # Format LUKS volume
+    format_luks "$HOME" "$container_name" "$KEYS_DIR/$container_name/priv/${container_name}_private_key.pem"
     log_message "Volume LUKS formaté."
 
-    open_luks "$HOME" "$CONTAINER_NAME" "$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_cle_privee.pem"
-    log_message "Volume LUKS ouvert."
-
+    MAPPER_NAME="${container_name}_mapper"
+    
+    if ! open_luks "$HOME" "$container_name" "$KEYS_DIR/$container_name/priv/${container_name}_private_key.pem"; then
+        return 1
+    fi
+    
+    # Format ext4
     format_ext4 "$MAPPER_NAME"
     log_message "Volume formaté en ext4."
-
-    # Ajouter la clé maître au volume avec la clé privée du conteneur
-    create_master_key
-    log_message "Clé maître créée."
-
-    add_luks_key "$HOME" "$CONTAINER_NAME" "$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_cle_privee.pem" "$KEYS_DIR/master/priv/cle_maitre.pem"
-    log_message "Clé maître ajoutée au volume."
-
-    # Log the MAPPER_NAME and mount point
-    log_message "MAPPER_NAME: $MAPPER_NAME"
-    log_message "Mount point: /mnt/$CONTAINER_NAME"
     
-    # Mount the volume
-    log_message "Tentative de montage du volume."
-    mount_luks "$MAPPER_NAME" "/mnt/$CONTAINER_NAME"
-    log_message "Volume monté."
+    # Mount volume
+    if ! mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${container_name%$CONTAINER_EXT}"; then
+        close_luks "$MAPPER_NAME"
+        return 1
+    fi
+    log_message "Volume monté avec succès."
 }
-
-# Fonction pour ouvrir le volume LUKS et le monter
+# Open and mount LUKS volume with private key
+# @param void
+# @return 0 on success, 1 on failure
 open_volume() {
-    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
-    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
-    CONTAINER_PATH="$HOME/$CONTAINER_NAME"
-    SELECTED_KEY="$KEYS_DIR/$CONTAINER_NAME/priv/${CONTAINER_NAME}_cle_privee.pem"
-    open_luks "$HOME" "$CONTAINER_NAME" "$SELECTED_KEY"
-    mount_luks "$MAPPER_NAME" "/mnt/$CONTAINER_NAME"
+    local container_name=""
+    local container_path=""
+    local key_path=""
+    
+    read -p "Nom du fichier conteneur (sans extension) : " container_name
+    
+    # Validate input
+    if [ -z "$container_name" ]; then
+        log_message "Error: No container name provided"
+        return 1
+    fi
+    
+    # Set paths
+    container_name="${container_name}${CONTAINER_EXT}"
+    container_path="$HOME/$container_name"
+    key_path="$KEYS_DIR/$container_name/priv/${container_name}_private_key.pem"
+    
+    # Check if container exists
+    if [ ! -f "$container_path" ]; then
+        log_message "Error: Container not found at $container_path"
+        return 1
+    fi
+    
+    # Open LUKS container
+    if ! open_luks "$HOME" "$container_name" "$key_path"; then
+        return 1
+    fi
+    
+    # Mount volume
+    if ! mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${container_name%$CONTAINER_EXT}"; then
+        log_message "Error: Failed to mount volume"
+        sudo cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null
+        return 1
+    fi
+    
+    log_message "Volume successfully opened and mounted"
+    return 0
 }
 
 # Fonction pour démonter et fermer le volume
+# Fonction pour démonter et fermer le volume
 unmount_volume() {
-    read -p "Nom du volume (sans extension) : " VOLUME_NAME
-    MAPPER_NAME="${VOLUME_NAME}_mapper"
-    MOUNT_POINT="$MOUNT_ROOT/$VOLUME_NAME"
-    unmount_luks "$MOUNT_POINT"
-    close_luks "$MAPPER_NAME"
-}
-
-# Fonction pour lister les volumes montés (seulement les .vault)
-list_mounted() {
     echo "Volumes .vault montés :"
     echo "------------------------------------------------"
-    echo "MAPPER | POINT DE MONTAGE | STATUT"
+    echo "INDEX | MAPPER | POINT DE MONTAGE"
     echo "------------------------------------------------"
     
-    # Find all mounted mappers directly
-    sudo dmsetup ls --target crypt | while read mapper rest; do
-        if [[ "$mapper" == *"_mapper" ]]; then
-            # Get mount point if mounted
-            mount_point=$(mount | grep "/dev/mapper/$mapper" | awk '{print $3}')
-            
+    local index=1
+    local mounted_volumes=()
+    
+    while read -r mapper rest; do
+        if [[ "$mapper" == *".vault_mapper" ]]; then
+            local mount_point=$(grep "/dev/mapper/$mapper" /proc/mounts | awk '{print $2}')
             if [ -n "$mount_point" ]; then
-                echo "$mapper | $mount_point | Actif, Monté"
+                echo "$index) $mapper | $mount_point"
+                mounted_volumes+=("$index:$mapper:$mount_point")
+                ((index++))
+            fi
+        fi
+    done <<< "$(sudo dmsetup ls --target crypt)"
+    
+    if [ ${#mounted_volumes[@]} -eq 0 ]; then
+        echo "Aucun volume monté trouvé."
+        return 1
+    fi
+    
+    echo "------------------------------------------------"
+    read -p "Entrez l'INDEX du volume à démonter : " volume_index
+    
+    local selected_entry=""
+    for entry in "${mounted_volumes[@]}"; do
+        if [[ "$entry" == "$volume_index:"* ]]; then
+            selected_entry="$entry"
+            break
+        fi
+    done
+    
+    if [ -z "$selected_entry" ]; then
+        log_message "Erreur : INDEX invalide."
+        return 1
+    fi
+    
+    local selected_mapper=$(echo "$selected_entry" | cut -d: -f2)
+    local selected_mount_point=$(echo "$selected_entry" | cut -d: -f3)
+    
+    if ! sudo umount "$selected_mount_point"; then
+        log_message "Erreur lors du démontage de $selected_mount_point"
+        return 1
+    else
+        log_message "Volume démonté avec succès: $selected_mount_point"
+        sudo rmdir "$selected_mount_point" 2>/dev/null
+    fi
+
+    if ! sudo cryptsetup luksClose "$selected_mapper"; then
+        log_message "Erreur lors de la fermeture du mapper: $selected_mapper"
+        return 1
+    else
+        log_message "Mapper fermé avec succès: $selected_mapper"
+    fi
+}
+# Fonction pour lister les volumes .vault montés
+# @return void
+# Fonction pour lister les volumes .vault montés
+# @return void
+# Fonction pour lister les volumes .vault montés
+# @return void
+list_mounted_vaults() {
+    echo "Volumes .vault montés :"
+    echo "------------------------------------------------"
+    echo "FICHIER VAULT | MAPPER | FICHIER LOOP | POINT DE MONTAGE"
+    echo "------------------------------------------------"
+    
+    # Liste tous les mappers cryptsetup
+    sudo dmsetup ls --target crypt | while read -r mapper rest; do
+        echo "Traitement du mapper: $mapper"  # Message de débogage
+        
+        # Vérifie si le mapper correspond à un volume .vault
+        if [[ "$mapper" == *".vault_mapper" ]]; then
+            vault_file=$(sudo cryptsetup status "$mapper" | grep 'device:' | awk '{print $2}')
+            echo "Fichier vault trouvé: $vault_file"  # Message de débogage
+            
+            if [ -n "$vault_file" ]; then
+                loop_file=$(sudo losetup -j "$vault_file" | awk -F: '{print $1}')
                 
-                # Afficher les détails de montage pour ce mapper
-                echo "Détails du mapper:"
-                sudo cryptsetup status "$mapper"
-                echo "Point de montage:"
-                mount | grep "/dev/mapper/$mapper"
-                echo "------------------------------------------------"
+                if [ -z "$loop_file" ]; then
+                    echo "Erreur: Impossible de trouver le fichier loop pour $vault_file"
+                    continue
+                fi
+                echo "Fichier loop trouvé: $loop_file"  # Message de débogage
+                
+                mount_point=$(grep "/dev/mapper/$mapper" /proc/mounts | awk '{print $2}')
+                
+                if [ -z "$mount_point" ]; then
+                    # Vérifie dans /mnt/vault sans l'extension .vault
+                    base_name="${vault_file##*/}"
+                    base_name="${base_name%.vault}"
+                    mount_point=$(grep "$MOUNT_ROOT/$base_name" /proc/mounts | awk '{print $2}')
+                    
+                    if [ -z "$mount_point" ]; then
+                        echo "Erreur: Impossible de trouver le point de montage pour $mapper"
+                        continue
+                    fi
+                fi
+                echo "Point de montage trouvé: $mount_point"  # Message de débogage
+                
+                if [ -n "$mount_point" ]; then
+                    echo "$vault_file | $mapper | $loop_file | $mount_point"
+                else
+                    echo "$vault_file | $mapper | $loop_file | Non monté"
+                fi
+            else
+                echo "Aucun fichier .vault trouvé pour le mapper $mapper"
             fi
         fi
     done
+    echo "------------------------------------------------"
 }
 
 # Fonction pour lister les conteneurs avec leurs noms et emplacements
 list_containers() {
-    echo "Conteneurs disponibles :"
-    find "$HOME" -name "*${CONTAINER_EXT}"
+    echo "Liste des conteneurs .vault disponibles :"
+    echo "------------------------------------------------"
+    find "$HOME" -name "*${CONTAINER_EXT}" | while read -r container; do
+        echo "$container"
+    done
+    echo "------------------------------------------------"
 }
 
-# Fonction pour lister les clés LUKS d'un volume
-list_luks_keys() {
-    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
-    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
-    CONTAINER_PATH="$HOME/$CONTAINER_NAME"
+# Fonction pour lister les clés USB disponibles
+list_usb_devices() {
+    echo "Périphériques USB disponibles :"
+    echo "------------------------------------------------"
+    lsblk -d -o NAME,SIZE,TYPE,MOUNTPOINT | grep "disk\|part"
+    echo "------------------------------------------------"
+}
 
-    if [ ! -f "$CONTAINER_PATH" ]; then
-        log_message "Erreur : Le fichier conteneur $CONTAINER_PATH n'existe pas."
+# Fonction pour vérifier et monter un périphérique USB
+check_and_mount_usb() {
+    local usb_path=$1
+    local usb_mount=""
+    
+    while [ ! -b "$usb_path" ]; do
+        log_message "Erreur : Périphérique $usb_path non trouvé"
+        read -p "Veuillez entrer un chemin de périphérique USB valide (ex: /dev/sdb1) : " usb_path
+    done
+    
+    usb_mount=$(lsblk -n -o MOUNTPOINT "$usb_path")
+    if [ $? -ne 0 ]; then
+        log_message "Erreur : Impossible de récupérer le point de montage pour $usb_path"
         exit 1
     fi
-
-    sudo cryptsetup luksDump "$CONTAINER_PATH"
+    if [ $? -ne 0 ]; then
+        log_message "Erreur : Impossible de récupérer le point de montage pour $usb_path"
+        read -p "Périphérique non monté. Voulez-vous le monter ? (y/n) : " mount_response
+    fi
+    
+    if [ -z "$usb_mount" ]; then
+        read -p "Périphérique non monté. Voulez-vous le monter? (y/n) : " mount_response
+        if [[ "$mount_response" == "y" ]]; then
+            usb_mount="/mnt/usb_temp"
+            sudo mkdir -p "$usb_mount"
+            sudo mount "$usb_path" "$usb_mount"
+        else
+            log_message "Opération annulée"
+            exit 1
+        fi
+    fi
+    echo "$usb_mount"
 }
 
-# Fonction pour lister les volumes montés avec leur fichier .vault source
-list_mounted_vaults() {
-    echo "Volumes .vault montés :"
-    echo "------------------------------------------------"
-    echo "FICHIER VAULT | MAPPER | POINT DE MONTAGE"
-    echo "------------------------------------------------"
+# Fonction pour préparer le conteneur USB
+prepare_usb_container() {
+    local usb_mount=$1
+    local container_name=$2
+    local size_gb=$3
+    local container_path="$usb_mount/$container_name"
     
-    # Trouver tous les fichiers .vault
-    find "$HOME" -name "*${CONTAINER_EXT}" | while read vault_file; do
-        # Obtenir le nom de base du fichier vault (sans le chemin)
-        vault_name=$(basename "$vault_file")
-        # Nom du mapper correspondant
-        mapper_name="${vault_name%${CONTAINER_EXT}}_mapper"
-        
-        # Vérifier si le mapper existe
-        if sudo cryptsetup status "$mapper_name" &>/dev/null; then
-            # Trouver le point de montage
-            mount_point=$(mount | grep "/dev/mapper/$mapper_name" | awk '{print $3}')
-            if [ -n "$mount_point" ]; then
-                echo "$vault_file | $mapper_name | $mount_point"
-            else
-                echo "$vault_file | $mapper_name | Non monté"
-            fi
+    local container_size=$((size_gb * 1024))
+    check_available_space "$usb_mount" "$container_size"
+    create_container "$usb_mount" "$container_name" "$container_size"
+    
+    echo "$container_path"
+}
+
+# Fonction pour configurer le LUKS sur USB
+setup_usb_luks() {
+    local container_path=$1
+    local mapper_name=$2
+    check_available_space "$usb_mount" "$container_size"
+    echo "Configuration du mot de passe pour le conteneur"
+    sudo cryptsetup --type luks2 luksFormat "$container_path"
+    sudo cryptsetup luksOpen "$container_path" "$mapper_name"
+    format_ext4 "$mapper_name"
+}
+
+# Fonction principale pour créer un conteneur USB
+create_usb_volume() {
+    # 1. Liste et sélection du périphérique USB
+    list_usb_devices
+    read -p "Entrez le chemin du périphérique USB (ex: /dev/sdb1) : " USB_PATH
+    
+    # 2. Nom du conteneur
+    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
+    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
+    
+    # 3. Vérification et montage USB
+    USB_MOUNT=$(check_and_mount_usb "$USB_PATH")
+    
+    # 4. Taille et création du conteneur
+    read -p "Taille du conteneur en Go : " CONTAINER_SIZE_GB
+    CONTAINER_PATH=$(prepare_usb_container "$USB_MOUNT" "$CONTAINER_NAME" "$CONTAINER_SIZE_GB")
+    
+    # 5. Configuration LUKS
+    MAPPER_NAME="${CONTAINER_NAME}_mapper"
+    setup_usb_luks "$CONTAINER_PATH" "$MAPPER_NAME"
+    
+    # 6. Montage final
+    mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${CONTAINER_NAME%$CONTAINER_EXT}"
+    
+    log_message "Conteneur USB créé avec succès à $CONTAINER_PATH"
+}
+
+# Fonction pour ouvrir un conteneur USB avec mot de passe
+open_usb_volume() {
+    list_usb_devices
+    read -p "Entrez le chemin du périphérique USB (ex: /dev/sdb1) : " USB_PATH
+    read -p "Nom du fichier conteneur (sans extension) : " CONTAINER_NAME
+    CONTAINER_NAME="${CONTAINER_NAME}${CONTAINER_EXT}"
+    
+    # Vérifier le point de montage USB
+    USB_MOUNT=$(lsblk -n -o MOUNTPOINT "$USB_PATH")
+    if [ -z "$USB_MOUNT" ]; then
+        read -p "Périphérique non monté. Voulez-vous le monter? (y/n) : " MOUNT_RESPONSE
+        if [[ "$MOUNT_RESPONSE" == "y" ]]; then
+            USB_MOUNT="/mnt/usb_temp"
+            sudo mkdir -p "$USB_MOUNT"
+            sudo mount "$USB_PATH" "$USB_MOUNT"
+        else
+            log_message "Opération annulée"
+            exit 1
         fi
-    done
+    fi
+    
+    CONTAINER_PATH="$USB_MOUNT/$CONTAINER_NAME"
+    MAPPER_NAME="${CONTAINER_NAME}_mapper"
+    
+    # Ouvrir avec mot de passe
+    sudo cryptsetup luksOpen "$CONTAINER_PATH" "$MAPPER_NAME"
+    mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${CONTAINER_NAME%$CONTAINER_EXT}"
+}
+
+# Format and mount a LUKS volume
+# @param $1 Container path
+# @param $2 Container name
+# @param $3 Key file path
+# @return void
+format_and_mount_volume() {
+    local path=$1
+    local name=$2
+    local key=$3
+
+    format_luks_volume "$path" "$name" "$key"
+    log_message "LUKS volume formatted at $path/$name"
+
+    open_luks "$path" "$name" "$key"
+    log_message "LUKS volume opened"
+
+    format_ext4_volume "$MAPPER_NAME"
+    log_message "Volume formatted as ext4"
+
+    mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${name%$CONTAINER_EXT}"
+    log_message "Volume mounted successfully"
+}
+
+# Add master key to LUKS volume
+# @param $1 Volume path
+# @param $2 Volume name
+# @param $3 Container private key
+# @return void
+add_master_key_to_volume() {
+    local path=$1
+    local name=$2
+    local private_key=$3
+    local MASTER_KEY="$KEYS_DIR/master/priv/master_key.pem"
+
+    # Vérification des fichiers de clés
+    if [ ! -f "$private_key" ]; then
+        log_message "Error: Private key file not found"
+        return 1
+    fi
+
+    if [ ! -f "$master_key" ]; then
+        log_message "Error: Master key file not found"
+        return 1
+    fi
+
+    add_luks_key "$path" "$name" "$master_key" "$private_key"
+    if [ $? -ne 0 ]; then
+        log_message "Error: Failed to add master key"
+        return 1
+    fi
+
+    log_message "Master key successfully added to volume"
+    return 0
+}
+
+# Open volume with master key
+# @param $1 Volume path
+# @param $2 Volume name
+# @return void
+open_volume_with_master() {
+    local container_name=""
+    local master_key="$KEYS_DIR/master/priv/master_key.pem"
+    
+    read -p "Nom du fichier conteneur (sans extension) : " container_name
+    
+    # Validate input
+    if [ -z "$container_name" ]; then
+        log_message "Error: No container name provided"
+        return 1
+    fi
+    
+    # Set paths
+    container_name="${container_name}${CONTAINER_EXT}"
+    container_path="$HOME/$container_name"
+    
+    # Check if container exists
+    if [ ! -f "$container_path" ]; then
+        log_message "Error: Container not found at $container_path"
+        return 1
+    fi
+    
+    # Check if master key exists
+    if [ ! -f "$master_key" ]; then
+        log_message "Error: Master key not found"
+        return 1
+    fi
+    
+    # Open LUKS container with master key
+    if ! open_luks "$HOME" "$container_name" "$master_key"; then
+        return 1
+    fi
+    
+    # Mount volume
+    if ! mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${container_name%$CONTAINER_EXT}"; then
+        log_message "Error: Failed to mount volume"
+        sudo cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null
+        return 1
+    fi
+    
+    log_message "Volume successfully opened and mounted with master key"
+    return 0
+}
+
+
+
+# Task functions for menu options
+# @return void
+task_create_volume() {
+    read -p "Enter container name (without extension): " container_name
+    container_name="${container_name}${CONTAINER_EXT}"
+    read -p "Enter container size in GB: " container_size
+    create_volume "$container_name" "$container_size"
+}
+
+task_create_key_pair() {
+    read -p "Enter container name: " container_name
+    create_key_pair "$container_name"
+}
+
+task_create_master_key() {
+    create_master_key
+}
+
+task_encrypt_volume() {
+    read -p "Enter volume path to encrypt: " volume_path
+    read -p "Enter volume name: " volume_name
+    encrypt_volume "$volume_path" "$volume_name"
+}
+
+task_decrypt_volume() {
+    read -p "Enter volume path to decrypt: " volume_path
+    read -p "Enter encrypted volume name (without .enc): " volume_name
+    decrypt_volume "$volume_path" "${volume_name}.enc"
 }
 
 # Fonction pour afficher le menu
@@ -556,79 +958,124 @@ show_menu() {
     echo "-------------------------------------------------------"
     echo "14) Démonter tous les volumes"
     echo "15) Fermer tous les mappers"
-    echo "16) Quitter"
+    echo "16) Créer un conteneur sur USB avec mot de passe"
+    echo "17) Ouvrir un conteneur USB avec mot de passe"
+    echo "18) Lister les périphériques USB"
+    echo "-------------------------------------------------------"
+    echo "19) Quitter"
+}
+
+# Fonctions pour les tâches du menu
+task_create_volume() {
+    create_volume
+}
+
+task_create_key_pair() {
+    read -p "Nom du fichier conteneur : " CONTAINER_NAME
+    create_key_pair "$CONTAINER_NAME"
+}
+
+task_create_master_key() {
+    create_master_key
+}
+
+task_encrypt_volume() {
+    read -p "Entrez le chemin du volume à chiffrer : " VOLUME_A_CHIFFRER
+    read -p "Entrez le nom du volume à chiffrer : " NOM_VOLUME
+    encrypt_volume "$VOLUME_A_CHIFFRER" "$NOM_VOLUME"
+}
+
+task_decrypt_volume() {
+    read -p "Entrez le chemin du volume à déchiffrer : " VOLUME_A_DECHIFFRER
+    read -p "Entrez le nom du volume chiffré (sans extension .enc) : " NOM_VOLUME_CHIFFRE
+    decrypt_volume "$VOLUME_A_DECHIFFRER" "${NOM_VOLUME_CHIFFRE}.enc"
+}
+
+task_open_volume() {
+    open_volume
+}
+
+task_unmount_volume() {
+    unmount_volume
+}
+
+task_decrypt_master() {
+    read -p "Entrez le chemin du volume à déchiffrer : " VOLUME_A_DECHIFFRER
+    read -p "Entrez le nom du volume chiffré (sans extension .enc) : " NOM_VOLUME_CHIFFRE
+    decrypt_master "$VOLUME_A_DECHIFFRER" "${NOM_VOLUME_CHIFFRE}.enc"
+}
+
+task_open_master() {
+    open_volume_with_master
+}
+
+task_apply_master() {
+    apply_new_master
+}
+
+task_list_luks_keys() {
+    list_luks_keys
+}
+
+task_list_mounted() {
+    list_mounted_vaults
+}
+
+task_list_containers() {
+    list_containers
+}
+
+task_unmount_all() {
+    unmount_all_volumes
+}
+
+task_close_all() {
+    close_all_mappers
+}
+
+task_create_usb() {
+    create_usb_volume
+}
+
+task_open_usb() {
+    open_usb_volume
+}
+
+task_list_usb() {
+    list_usb_devices
 }
 
 # Boucle principale
 while true; do
     show_menu
-    read -p "Entrez le numéro de la tâche (1-16) : " TASK_NUMBER
+    read -p "Entrez le numéro de la tâche (1-19) : " TASK_NUMBER
     
-    if ! [[ "$TASK_NUMBER" =~ ^[1-9]$|^1[0-6]$ ]]; then
+    if ! [[ "$TASK_NUMBER" =~ ^[1-9]$|^1[0-9]$ ]]; then
         echo "Numéro de tâche invalide."
         continue
     fi
 
     case "$TASK_NUMBER" in
-        1)
-            create_volume
-            ;;
-        2)
-            read -p "Nom du fichier conteneur : " CONTAINER_NAME
-            create_key_pair "$CONTAINER_NAME"
-            ;;
-        3)
-            create_master_key
-            ;;
-        4)
-            read -p "Entrez le chemin du volume à chiffrer : " VOLUME_A_CHIFFRER
-            read -p "Entrez le nom du volume à chiffrer : " NOM_VOLUME
-            encrypt_volume "$VOLUME_A_CHIFFRER" "$NOM_VOLUME"
-            ;;
-        5)
-            read -p "Entrez le chemin du volume à déchiffrer : " VOLUME_A_DECHIFFRER
-            read -p "Entrez le nom du volume chiffré (sans extension .enc) : " NOM_VOLUME_CHIFFRE
-            decrypt_volume "$VOLUME_A_DECHIFFRER" "${NOM_VOLUME_CHIFFRE}.enc"
-            ;;
-        6)
-            open_volume
-            ;;
-        7)
-            unmount_volume
-            ;;
-        8)
-            read -p "Entrez le chemin du volume à déchiffrer : " VOLUME_A_DECHIFFRER
-            read -p "Entrez le nom du volume chiffré (sans extension .enc) : " NOM_VOLUME_CHIFFRE
-            decrypt_master "$VOLUME_A_DECHIFFRER" "${NOM_VOLUME_CHIFFRE}.enc"
-            ;;
-        9)
-            open_master
-            ;;
-        10)
-            apply_new_master
-            ;;
-        11)
-            list_luks_keys
-            ;;
-        12)
-            list_mounted
-            ;;
-        13)
-            list_containers
-            ;;
-        14)
-            unmount_all_volumes
-            ;;
-        15)
-            close_all_mappers
-            ;;
-        16)
-            echo "Au revoir!"
-            exit 0
-            ;;
-        *)
-            echo "Numéro de tâche invalide."
-            ;;
+        1)  task_create_volume ;;
+        2)  task_create_key_pair ;;
+        3)  task_create_master_key ;;
+        4)  task_encrypt_volume ;;
+        5)  task_decrypt_volume ;;
+        6)  task_open_volume ;;
+        7)  task_unmount_volume ;;
+        8)  task_decrypt_master ;;
+        9)  task_open_master ;;
+        10) task_apply_master ;;
+        11) task_list_luks_keys ;;
+        12) task_list_mounted ;;
+        13) task_list_containers ;;
+        14) task_unmount_all ;;
+        15) task_close_all ;;
+        16) task_create_usb ;;
+        17) task_open_usb ;;
+        18) task_list_usb ;;
+        19) echo "Au revoir!"; exit 0 ;;
+        *) echo "Numéro de tâche invalide." ;;
     esac
     
     echo
