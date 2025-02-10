@@ -117,6 +117,31 @@ add_luks_key() {
     return 0
 }
 
+add_master_luks_key() {
+    local path=$1
+    local name=$2
+    local private_key=$3
+    local master_key="$KEYS_DIR/master/priv/master_key.pem"
+
+    # Vérification des fichiers de clés
+    if [ ! -f "$private_key" ]; then
+        log_message "Error: Private key file not found"
+        return 1
+    fi
+
+    if [ ! -f "$master_key" ]; then
+        log_message "Error: Master key file not found"
+        return 1
+    fi
+
+    if ! sudo cryptsetup luksAddKey --key-file="$private_key" "$path/$name" "$master_key"; then
+        log_message "Error: Failed to add master key"
+        return 1
+    fi
+
+    log_message "Master key successfully added to volume"
+    return 0
+}
 
 # Fonction pour créer le fichier conteneur chiffré
 create_container() {
@@ -450,7 +475,7 @@ apply_new_master() {
 
     # Ajouter la clé maître
     log_message "Ajout de la clé maître"
-    add_luks_key "$HOME" "$CONTAINER_NAME" "$master_key" "$private_key"
+    add_master_luks_key "$HOME" "$CONTAINER_NAME" "$master_key"
 
     close_luks "$MAPPER_NAME"
     log_message "Application de la clé maître terminée"
@@ -497,13 +522,24 @@ create_volume() {
     format_ext4 "$MAPPER_NAME"
     log_message "Volume formaté en ext4."
     
+    # Add master key to volume
+    if ! add_master_luks_key "$HOME" "$container_name" "$KEYS_DIR/$container_name/priv/${container_name}_private_key.pem"; then
+        return 1
+    fi
+
+    log_message "Clé maître ajoutée au volume avec succès."
+
     # Mount volume
     if ! mount_luks "$MAPPER_NAME" "$MOUNT_ROOT/${container_name%$CONTAINER_EXT}"; then
         close_luks "$MAPPER_NAME"
         return 1
     fi
     log_message "Volume monté avec succès."
+
+
 }
+
+
 # Open and mount LUKS volume with private key
 # @param void
 # @return 0 on success, 1 on failure
@@ -827,32 +863,7 @@ format_and_mount_volume() {
 # @param $2 Volume name
 # @param $3 Container private key
 # @return void
-add_master_key_to_volume() {
-    local path=$1
-    local name=$2
-    local private_key=$3
-    local MASTER_KEY="$KEYS_DIR/master/priv/master_key.pem"
 
-    # Vérification des fichiers de clés
-    if [ ! -f "$private_key" ]; then
-        log_message "Error: Private key file not found"
-        return 1
-    fi
-
-    if [ ! -f "$master_key" ]; then
-        log_message "Error: Master key file not found"
-        return 1
-    fi
-
-    add_luks_key "$path" "$name" "$master_key" "$private_key"
-    if [ $? -ne 0 ]; then
-        log_message "Error: Failed to add master key"
-        return 1
-    fi
-
-    log_message "Master key successfully added to volume"
-    return 0
-}
 
 # Open volume with master key
 # @param $1 Volume path
@@ -1082,3 +1093,4 @@ while true; do
     read -p "Appuyez sur Entrée pour continuer..."
     clear
 done
+
