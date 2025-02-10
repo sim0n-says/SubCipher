@@ -111,7 +111,7 @@ $HOME/.secrets/keys/
 La clé maître est un mécanisme de sécurité qui permet :
 
 - **Accès d'urgence** : Récupération des données en cas de perte des clés privées
-- **Conformité légale** : Capacité de répondre aux demandes légales (subpoenas) sans compromettre la sécurité globale
+- **Conformité légale** : Capacité de répondre aux demandes légales (subpoenas)
 - **Gestion centralisée** : Administration simplifiée des volumes chiffrés
 
 #### Fonctionnement
